@@ -38,11 +38,10 @@ class MCRadiationFieldPropertiesSolver:
         self,
         estimators_bulk: EstimatorsBulk,
         estimators_line: EstimatorsLine,
-        time_explosion: Quantity,
+        velocity_gradient: np.ndarray,
         time_of_simulation: Quantity,
         volume: np.ndarray,
         line_list_nu: np.ndarray,
-        detailed_optical_window: bool = False,
     ) -> EstimatedRadiationFieldProperties:
         """
         Calculate an updated radiation field from the :math:
@@ -56,17 +55,14 @@ class MCRadiationFieldPropertiesSolver:
             Bulk radiation field estimators
         estimators_line
             Line interaction estimators
-        time_explosion
-            Time since explosion
+        velocity_gradient
+            Local dv/dr in each cell
         time_of_simulation
             Time of simulation
         volume
             Volume of each cell
         line_list_nu
             Frequency list for lines
-        detailed_optical_window:
-            Whether to only fill in the rad field estimated j_blues
-            between 2500 and 10,000 AA, which follows ctardis.
 
         Returns
         -------
@@ -78,11 +74,10 @@ class MCRadiationFieldPropertiesSolver:
         j_blues = self.estimate_jblues(
             estimators_line.mean_intensity_blueward,
             dilute_planck_rad_field,
-            time_explosion,
+            velocity_gradient,
             time_of_simulation,
             volume,
             line_list_nu,
-            detailed_optical_window,
         )
 
         return EstimatedRadiationFieldProperties(
@@ -116,15 +111,14 @@ class MCRadiationFieldPropertiesSolver:
         self,
         j_blue_estimator: np.ndarray,
         estimated_radfield_state: DilutePlanckianRadiationField,
-        time_explosion: Quantity,
+        velocity_gradient: np.ndarray,
         time_of_simulation: Quantity,
         volume: np.ndarray,
         line_list_nu: np.ndarray,
-        detailed_optical_window: bool = False,
     ) -> np.ndarray:
         j_blues_norm_factor = (
             const.c.cgs
-            * time_explosion
+            / velocity_gradient
             / (4 * np.pi * time_of_simulation * volume)
         )
         j_blues = j_blue_estimator * j_blues_norm_factor.cgs.value
@@ -132,13 +126,6 @@ class MCRadiationFieldPropertiesSolver:
             line_list_nu
         )
         zero_j_blues = j_blues == 0.0
-        if detailed_optical_window:
-            # Ctardis restricts the radfield estimated jblues to 2500-10000 AA
-            line_list_wavs = (line_list_nu * u.Hz).to(u.AA, u.spectral())
-            optical_mask = np.logical_and(
-                line_list_wavs > 2500.0 * u.AA, line_list_wavs < 10000.0 * u.AA
-            )
-            j_blues[~optical_mask] = planck_j_blues[~optical_mask]
         j_blues[zero_j_blues] = self.w_epsilon * planck_j_blues[zero_j_blues]
 
         return j_blues

@@ -12,14 +12,14 @@ from tardis.transport.montecarlo.configuration.base import (
     MonteCarloConfiguration,
     configuration_initialize,
 )
-from tardis.transport.montecarlo.estimators.mc_rad_field_solver import (
+from tardis.transport.montecarlo.modes.nonhomologous.mc_rad_field_solver import (
     MCRadiationFieldPropertiesSolver,
 )
-from tardis.transport.montecarlo.modes.iip.montecarlo_transport import (
+from tardis.transport.montecarlo.modes.nonhomologous.montecarlo_transport import (
     montecarlo_transport,
 )
-from tardis.transport.montecarlo.montecarlo_transport_state import (
-    MonteCarloTransportState,
+from tardis.transport.montecarlo.modes.nonhomologous.montecarlo_transport_state import (
+    MonteCarloTransportStateNonhomologous,
 )
 from tardis.transport.montecarlo.packets.trackers.tracker_full_util import (
     generate_tracker_full_list,
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 # TODO: refactor this into more parts
-class MCTransportSolverIIP(HDFWriterMixin):
+class MCTransportSolverNonhomologous(HDFWriterMixin):
     """
     This class modifies the MonteCarloTransportState to solve the radiative
     transfer problem.
@@ -118,28 +118,25 @@ class MCTransportSolverIIP(HDFWriterMixin):
             no_of_packets, seed_offset=iteration
         )
 
-        # IIP mode: continuum processes always enabled
-        montecarlo_globals.CONTINUUM_PROCESSES_ENABLED = True
-
         geometry_state = simulation_state.geometry.to_numba()
         opacity_state_numba = opacity_state.to_numba(
             macro_atom_state,
             self.line_interaction_type,
         )
-        # opacity_state_numba = opacity_state_numba[
-        #     simulation_state.geometry.v_inner_boundary_index : simulation_state.geometry.v_outer_boundary_index
-        # ]
+        opacity_state_numba = opacity_state_numba[
+            simulation_state.geometry.r_inner_boundary_index : simulation_state.geometry.r_outer_boundary_index
+        ]
 
-        transport_state = MonteCarloTransportState(
+        transport_state = MonteCarloTransportStateNonhomologous(
             packet_collection,
             geometry_state=geometry_state,
             opacity_state=opacity_state_numba,
-            time_explosion=simulation_state.time_explosion,
             n_levels_bf_species_by_n_cells_tuple=n_levels_bf_species_by_n_cells_tuple,
         )
 
-        # IIP mode: full relativity always enabled
-        transport_state.enable_full_relativity = True
+        transport_state.enable_full_relativity = (
+            self.montecarlo_configuration.ENABLE_FULL_RELATIVITY
+        )
 
         configuration_initialize(
             self.montecarlo_configuration, self, no_of_virtual_packets
@@ -153,7 +150,29 @@ class MCTransportSolverIIP(HDFWriterMixin):
         show_progress_bars=True,
     ):
         """
-        Run the Monte Carlo calculation using IIP mode (continuum always enabled).
+        Run the montecarlo calculation.
+
+        Parameters
+        ----------
+        transport_state : tardis.transport.montecarlo.transport_state.TransportState
+            Transport state containing all the data needed for the Monte Carlo simulation
+        show_progress_bars : bool
+            Show progress bars
+
+        Returns
+        -------
+        v_packets_energy_hist : ndarray
+            Histogram of energy from virtual packets
+        """
+        return self.run_nonhomologous(transport_state, show_progress_bars)
+
+    def run_nonhomologous(
+        self,
+        transport_state,
+        show_progress_bars=True,
+    ):
+        """
+        Run the montecarlo calculation using nonhomologous mode (no continuum).
 
         Parameters
         ----------
@@ -188,31 +207,34 @@ class MCTransportSolverIIP(HDFWriterMixin):
         if show_progress_bars:
             reset_packet_pbar(number_of_rpackets)
 
-        # IIP mode: returns 3 estimator objects (bulk, line, continuum)
+        # nonhomologous mode: returns 4 values (no continuum estimators)
         (
+            v_packets_energy_hist,
+            vpacket_tracker,
             estimators_bulk,
             estimators_line,
-            estimators_continuum,
         ) = montecarlo_transport(
             transport_state.packet_collection,
             transport_state.geometry_state,
-            transport_state.time_explosion.cgs.value,
             transport_state.opacity_state,
             self.montecarlo_configuration,
-            transport_state.n_levels_bf_species_by_n_cells_tuple,
+            self.spectrum_frequency_grid.value,
             trackers_list,
+            number_of_vpackets,
             show_progress_bars=show_progress_bars,
         )
 
         # Attach estimators to transport state
         transport_state.estimators_bulk = estimators_bulk
         transport_state.estimators_line = estimators_line
-        transport_state.estimators_continuum = (
-            estimators_continuum  # IIP mode specific
-        )
 
         # Last interaction trackers are already populated directly in the list
         # No finalization needed with direct list approach
+
+        if self.montecarlo_configuration.ENABLE_VPACKET_TRACKING and (
+            number_of_vpackets > 0
+        ):
+            transport_state.vpacket_tracker = vpacket_tracker
 
         update_iterations_pbar(1)
         refresh_packet_pbar()
@@ -235,7 +257,11 @@ class MCTransportSolverIIP(HDFWriterMixin):
                 trackers_last_interaction_to_df(trackers_list)
             )
 
-        # IIP mode does not currently track virtual packets in montecarlo_transport
+        transport_state.virt_logging = (
+            self.montecarlo_configuration.ENABLE_VPACKET_TRACKING
+        )
+
+        return v_packets_energy_hist
 
     @classmethod
     def from_config(

@@ -6,8 +6,8 @@ from numba import njit
 from tardis import constants as const
 from tardis.transport.frame_transformations import (
     angle_aberration_CMF_to_LF,
-    get_doppler_factor,
-    get_inverse_doppler_factor,
+    get_doppler_factor_nonhomologous,
+    get_inverse_doppler_factor_nonhomologous,
 )
 from tardis.transport.montecarlo import njit_dict_no_parallel
 from tardis.transport.montecarlo.packets.radiative_packet import PacketStatus
@@ -60,7 +60,7 @@ def sample_nu_free_bound(opacity_state, shell, continuum_id):
 @njit(**njit_dict_no_parallel)
 def bound_free_emission(
     r_packet,
-    time_explosion,
+    geometry,
     opacity_state,
     continuum_id,
     enable_full_relativity,
@@ -71,12 +71,15 @@ def bound_free_emission(
     Parameters
     ----------
     r_packet : tardis.transport.montecarlo.r_packet.RPacket
-    time_explosion : float
+    geometry : NumbaNonhomologousRadial1DGeometry
     opacity_state : tardis.transport.montecarlo.numba_interface.OpacityState
     continuum_id : int
     """
-    inverse_doppler_factor = get_inverse_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+    v = geometry.get_velocity(r_packet.r, r_packet.current_shell_id)
+    inverse_doppler_factor = get_inverse_doppler_factor_nonhomologous(
+        v,
+        r_packet.mu,
+        enable_full_relativity,
     )
 
     comov_nu = sample_nu_free_bound(
@@ -87,29 +90,27 @@ def bound_free_emission(
     r_packet.next_line_id = current_line_id
 
     if enable_full_relativity:
-        r_packet.mu = angle_aberration_CMF_to_LF(
-            r_packet, time_explosion, r_packet.mu
-        )
+        raise NotImplementedError("Full relativity not implemented in non-homologous mode.")
+        #r_packet.mu = angle_aberration_CMF_to_LF(
+        #    r_packet, geometry, r_packet.mu
+        #)
 
 
 @njit(**njit_dict_no_parallel)
-def bf_cooling(r_packet, time_explosion, opacity_state, enable_full_relativity):
+def bf_cooling(r_packet, geometry, opacity_state, enable_full_relativity):
     """
     Bound-Free Cooling - Determine and run bf emission from cooling
 
     Parameters
     ----------
     r_packet : tardis.transport.montecarlo.r_packet.RPacket
-    time_explosion : float
+    geometry : NumbaNonhomologousRadial1DGeometry
     opacity_state : tardis.transport.montecarlo.numba_interface.OpacityState
     """
-    # Josh: I don't think we need to do this - BF cooling already picks one
-    # The interaction handler already sends you to an individual level, but here we
-    # ignore that and choose the level again.
     fb_cooling_prob = opacity_state.p_fb_deactivation[
         :, r_packet.current_shell_id
     ]
-    p = fb_cooling_prob[0]  # First fb_cooling prob_is 0
+    p = fb_cooling_prob[0]
     i = 0
     zrand = np.random.random()
     while p <= zrand:  # Can't search-sorted this because it's not cumulative
@@ -118,7 +119,7 @@ def bf_cooling(r_packet, time_explosion, opacity_state, enable_full_relativity):
     continuum_idx = i
     bound_free_emission(
         r_packet,
-        time_explosion,
+        geometry,
         opacity_state,
         continuum_idx,
         enable_full_relativity,
@@ -153,7 +154,7 @@ def sample_nu_free_free(opacity_state, shell):
 
 @njit(**njit_dict_no_parallel)
 def free_free_emission(
-    r_packet, time_explosion, opacity_state, enable_full_relativity
+    r_packet, geometry, opacity_state, enable_full_relativity
 ):
     """
     Free-Free emission - set the frequency from electron-ion interaction
@@ -161,11 +162,12 @@ def free_free_emission(
     Parameters
     ----------
     r_packet : tardis.transport.montecarlo.r_packet.RPacket
-    time_explosion : float
+    geometry : NumbaNonhomologousRadial1DGeometry
     opacity_state : tardis.transport.montecarlo.numba_interface.OpacityState
     """
-    inverse_doppler_factor = get_inverse_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+    v = geometry.get_velocity(r_packet.r, r_packet.current_shell_id)
+    inverse_doppler_factor = get_inverse_doppler_factor_nonhomologous(
+        v, r_packet.mu, enable_full_relativity
     )
     comov_nu = sample_nu_free_free(opacity_state, r_packet.current_shell_id)
     r_packet.nu = comov_nu * inverse_doppler_factor
@@ -173,13 +175,14 @@ def free_free_emission(
     r_packet.next_line_id = current_line_id
 
     if enable_full_relativity:
-        r_packet.mu = angle_aberration_CMF_to_LF(
-            r_packet, time_explosion, r_packet.mu
-        )
+        raise NotImplementedError("Full relativity not implemented in non-homologous mode.")
+        #r_packet.mu = angle_aberration_CMF_to_LF(
+        #    r_packet, geometry, r_packet.mu
+        #)
 
 
 @njit(**njit_dict_no_parallel)
-def thomson_scatter(r_packet, time_explosion, enable_full_relativity):
+def thomson_scatter(r_packet, geometry, enable_full_relativity):
     """
     Thomson scattering — no longer line scattering
     \n1) get the doppler factor at that position with the old angle
@@ -190,27 +193,34 @@ def thomson_scatter(r_packet, time_explosion, enable_full_relativity):
     Parameters
     ----------
     r_packet : tardis.transport.montecarlo.r_packet.RPacket
-    time_explosion : float
-        time since explosion in seconds
+    geometry : 
     """
-    old_doppler_factor = get_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+    v = geometry.get_velocity(r_packet.r, r_packet.current_shell_id)
+    old_doppler_factor = get_doppler_factor_nonhomologous(
+        v,
+        r_packet.mu,
+        enable_full_relativity,
     )
     comov_nu = r_packet.nu * old_doppler_factor
     comov_energy = r_packet.energy * old_doppler_factor
     r_packet.mu = get_random_mu()
-    inverse_new_doppler_factor = get_inverse_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+    inverse_new_doppler_factor = get_inverse_doppler_factor_nonhomologous(
+        v,
+        r_packet.mu,
+        enable_full_relativity,
     )
 
     r_packet.nu = comov_nu * inverse_new_doppler_factor
     r_packet.energy = comov_energy * inverse_new_doppler_factor
     if enable_full_relativity:
-        r_packet.mu = angle_aberration_CMF_to_LF(
-            r_packet, time_explosion, r_packet.mu
-        )
-    temp_doppler_factor = get_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+        raise NotImplementedError("Full relativity not implemented in non-homologous mode.")
+        #r_packet.mu = angle_aberration_CMF_to_LF(
+        #    r_packet, geometry, r_packet.mu
+        #)
+    temp_doppler_factor = get_doppler_factor_nonhomologous(
+        v,
+        r_packet.mu,
+        enable_full_relativity,
     )
 
 
@@ -224,7 +234,7 @@ class LineInteractionType(IntEnum):
 def line_emission(
     r_packet,
     emission_line_id,
-    time_explosion,
+    geometry,
     opacity_state,
     enable_full_relativity,
 ):
@@ -235,13 +245,16 @@ def line_emission(
     ----------
     r_packet : tardis.transport.montecarlo.r_packet.RPacket
     emission_line_id : int
-    time_explosion : float
+    geometry : NumbaNonhomologousRadial1DGeometry
     opacity_state : tardis.transport.montecarlo.numba_interface.OpacityState
     """
     if emission_line_id != r_packet.next_line_id:
         pass
-    inverse_doppler_factor = get_inverse_doppler_factor(
-        r_packet.r, r_packet.mu, time_explosion, enable_full_relativity
+    v = geometry.get_velocity(r_packet.r, r_packet.current_shell_id)
+    inverse_doppler_factor = get_inverse_doppler_factor_nonhomologous(
+        v,
+        r_packet.mu,
+        enable_full_relativity,
     )
     r_packet.nu = (
         opacity_state.line_list_nu[emission_line_id] * inverse_doppler_factor
@@ -249,9 +262,10 @@ def line_emission(
     r_packet.next_line_id = emission_line_id + 1
 
     if enable_full_relativity:
-        r_packet.mu = angle_aberration_CMF_to_LF(
-            r_packet, time_explosion, r_packet.mu
-        )
+        raise NotImplementedError("Full relativity not implemented in non-homologous mode.")
+        #r_packet.mu = angle_aberration_CMF_to_LF(
+        #    r_packet, geometry, r_packet.mu
+        #)
 
 
 @njit(**njit_dict_no_parallel)
